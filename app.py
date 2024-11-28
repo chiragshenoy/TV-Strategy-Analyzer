@@ -3,15 +3,175 @@ import pandas as pd
 import sqlite3
 import plotly.express as px
 import os
-import datetime
 import math
-
 
 st.set_page_config(layout="wide")
 
 # Streamlit Sidebar for Page Navigation
 st.sidebar.title("Navigation")
-page = st.sidebar.radio("Go to", ["Performance Summary", "List of Trades", "Filtered List of Trades", "Visualization", "Settings"])
+page = st.sidebar.radio("Go to", ["Mega List of Trades", "Performance Summary", "List of Trades", "Filtered List of Trades", "Visualization"])
+
+def renderResultForScript(scrip, dataFrame, weeklyDataframe, start_date, end_date):
+    # Filter data for the selected scrip
+        filtered_data = dataFrame[dataFrame['scrip'] == scrip]
+
+        start_date = pd.Timestamp(start_date)
+        end_date = pd.Timestamp(end_date)
+
+        filtered_data['DateTime'] = pd.to_datetime(filtered_data['DateTime'], errors='coerce')
+
+        # Filter trades that were opened (entries) during the date range
+        opened_trades = filtered_data[
+            (filtered_data['Type'].str.contains("Entry", na=False)) &
+            (filtered_data['DateTime'] >= start_date) &
+            (filtered_data['DateTime'] <= end_date)
+        ]
+
+        # Filter trades that were exited (exits) during the date range
+        exited_trades = filtered_data[
+            (filtered_data['Type'].str.contains("Exit", na=False)) &
+            (filtered_data['DateTime'] >= start_date) &
+            (filtered_data['DateTime'] <= end_date)
+        ]
+
+        # Ensure corresponding entry trades exist for exited trades
+        valid_exited_trades = pd.merge(
+            exited_trades, 
+            opened_trades[['Trade', 'DateTime']],  # Only keep Trade IDs and entry DateTime
+            on='Trade',
+            how='inner',
+            suffixes=('_exit', '_entry')
+        )
+
+        # Combine valid exits and opened trades
+        combined_trades = pd.concat([opened_trades, valid_exited_trades])
+
+        if len(combined_trades) != 0:
+
+            # Main page
+            st.subheader(f"Displaying trades for **{scrip}** from {start_date.date()} to {end_date.date()}")
+
+            # Show filtered data
+            columns_to_display = ['Trade', 'Type', 'Signal', 'DateTime', 'PriceINR','DateTime_entry', 'ProfitINR', 'Profit', 'Contracts']
+
+            combined_trades['DateTime'] = combined_trades['DateTime'].fillna(combined_trades['DateTime_exit'])
+            combined_trades = combined_trades.sort_values(by=['Trade', 'DateTime'], ascending=[False, False])
+
+            st.dataframe(combined_trades[columns_to_display])
+
+            # Profit calculation
+            realised_profit = 0
+            unrealised_profit = 0
+
+            partsOfEntry = 3
+            capital_per_trade = 100000
+
+            # Loop through each row to calculate the profit for each trade
+            # Initialize variables
+
+            results = []  # To store the results for the table
+
+            for _, row in combined_trades.iterrows():
+                if 'Entry' in row['Type']:  # Only consider the entry for the trade
+                    entry_price = row['PriceINR']
+                    entry_contracts = row['Contracts']
+
+                    if not math.isnan(entry_contracts) and not math.isnan(entry_price):
+                        units_purchased = math.floor(capital_per_trade / entry_price / (partsOfEntry / entry_contracts))  # Units
+                        entry_trade_id = row['Trade']
+
+                        # Find the corresponding exit trade
+                        exit_trade = combined_trades[
+                            (combined_trades['Trade'] == entry_trade_id) & 
+                            (combined_trades['Type'] == 'Exit Long')
+                        ]
+
+                        if not exit_trade.empty:
+                            exit_price = exit_trade.iloc[0]['PriceINR']
+                            points_captured = exit_price - entry_price
+                            profit = points_captured * units_purchased
+
+                            # Append to results
+                            results.append({
+                                "Trade ID": entry_trade_id,
+                                "Entry Price": entry_price,
+                                "Exit Price": exit_price,
+                                "Units Purchased": units_purchased,
+                                "Points Captured": points_captured,
+                                "Total PnL": profit,
+                                "Status": "Closed"
+                            })
+
+                            realised_profit += profit
+                    # Check open position exists
+                    else:
+                        if row['Signal'] == 'Buy' and not math.isnan(row['PriceINR']):
+                            closest_close = get_closest_close(weeklyDataframe, scrip, end_date)
+                            points_captured = float(closest_close) - entry_price
+
+                            # Filter for the Entry Long trades (Type == 'Entry Long') and those without an Exit Long counterpart
+                            entry_trades = combined_trades[(combined_trades['Type'] == 'Entry Long') & combined_trades['DateTime_entry'].isna()]
+
+                            # Now, for each entry, count how many other entries exist with the same PriceINR and DateTime
+                            entry_trades['Same_Price_DateTime_Count'] = entry_trades.groupby(['PriceINR', 'DateTime'])['PriceINR'].transform('count')
+
+                            # Reduce the count by 1 for trades that do not have a matching trade number (Exit Long)
+                            for idx, row in entry_trades.iterrows():
+                                matching_exit = combined_trades[(combined_trades['Type'] == 'Exit Long') & (combined_trades['DateTime_entry'] == row['DateTime'])]
+                                if matching_exit.empty:
+                                    entry_trades.at[idx, 'Same_Price_DateTime_Count'] -= 1
+
+                            # Find the highest Trade number and get its corresponding count
+                            highest_trade = entry_trades['Trade'].max()
+                            highest_trade_count = entry_trades[entry_trades['Trade'] == highest_trade]['Same_Price_DateTime_Count'].values[0]
+                            
+                            # Come up with better logic for this
+                            if highest_trade_count == partsOfEntry:
+                                number_of_open_contracts = 1
+                            elif highest_trade_count == 2:
+                                number_of_open_contracts = 2
+                            elif highest_trade_count == 0:
+                                number_of_open_contracts = partsOfEntry
+                            
+                            units_per_contract = math.floor(capital_per_trade / entry_price / partsOfEntry)
+
+                            st.write("Closing price: " + str(closest_close))
+                            unrealised_profit = points_captured * units_per_contract * number_of_open_contracts
+
+                            # Append to results
+                            results.append({
+                                "Trade ID": highest_trade,
+                                "Entry Price": entry_price,
+                                "Exit Price": "Holding :)",
+                                "Units Purchased": units_per_contract * number_of_open_contracts,
+                                "Points Captured": points_captured,
+                                "Total PnL": unrealised_profit,
+                                "Status": "Open"
+                            })
+
+            # Convert results to a DataFrame
+            results_df = pd.DataFrame(results)
+
+            # Display the table and total PnL
+            st.write("### Trade Summary")
+            st.dataframe(results_df)
+
+            st.write(f"### Realised PnL: Rs. {realised_profit:.2f}")
+            st.write(f"### Unrealised PnL: Rs. {unrealised_profit:.2f}")
+
+            # Close the database connection
+            perfConnection.close()
+
+            if realised_profit is None:
+                realised_profit = 0
+            if unrealised_profit is None:
+                unrealised_profit = 0
+
+            return (realised_profit, unrealised_profit)
+
+        else:
+            st.write("No Trades found for " + scrip)
+            return (0,0)
 
 def get_closest_close(df, scrip_name, input_time):
     """
@@ -112,11 +272,60 @@ def calculate_and_display_all_metrics(df, filter_column, target_column):
     # Display the dataframe with larger font and styled table
     st.dataframe(metrics_df.style.format(precision=2), use_container_width=True)
 
+if page == "Mega List of Trades":
+    st.title("Mega list of Trades")
+    st.markdown("""
+    This page allows you to analyze scrip data from the SQLite database. You can:
+    - See all trades for a given time period
+    - Get overall trades
+    """)
+
+    db_folder_path = "data/lot"
+
+    db_files = [f for f in os.listdir(db_folder_path) if f.endswith('.db')]
+
+    # Dropdown to select the .db file from the folder
+    if db_files:
+        db_file_name = st.selectbox("Select a .db file", db_files)
+        
+        # Construct the full path for the selected file
+        db_file_path = os.path.join(db_folder_path, db_file_name)
+        
+        # Load and process the selected database
+        perfConnection = sqlite3.connect(db_file_path)
+
+        weeklyConnection = sqlite3.connect("data/closing/weekly_closing.db")
+        weeklyDataframe = pd.read_sql_query("SELECT * from stock_data", weeklyConnection)
+
+        # Query the data from the selected database
+        dataFrame = pd.read_sql_query("SELECT * FROM table_name", perfConnection)
+        
+        st.sidebar.title("Filter Options")
+
+        # Select scrip
+        scrips = dataFrame['scrip'].unique()
+
+        start_date = st.sidebar.date_input("Start Date", value=pd.Timestamp("2024-01-01").date())
+        end_date = st.sidebar.date_input("End Date", value=pd.Timestamp("2024-12-12").date())
+
+        total_realised_pnl = 0
+        total_unrealised_pnl = 0
+
+        for scrip in scrips:
+            realised_pnl, unrealise_pnl = renderResultForScript(scrip, dataFrame, weeklyDataframe, start_date, end_date)
+            total_realised_pnl += realised_pnl
+            total_unrealised_pnl += unrealise_pnl
+            st.write("----")
+
+        st.header("Total realised: " + str(total_realised_pnl))
+        st.header("Total unrealised: " + str(total_unrealised_pnl))
+
+
 # List of Trades Page
 if page == "List of Trades":
     st.title("List of Trades")
     st.markdown("""
-    This app allows you to analyze scrip data from the SQLite database. You can:
+    This page allows you to analyze scrip data from the SQLite database. You can:
     - See all trades
     - Filter trades for a particular scrip
     """)
@@ -155,6 +364,13 @@ if page == "List of Trades":
 elif page == "Filtered List of Trades":
     
     st.title("Filtered List of Trades")
+
+    st.markdown("""
+    This page allows you to choose a time range and a script.
+    - Get unrealised and realised summary
+    - Get trades summary
+    """)
+
     db_folder_path = "data/lot"
 
     db_files = [f for f in os.listdir(db_folder_path) if f.endswith('.db')]
@@ -171,7 +387,6 @@ elif page == "Filtered List of Trades":
 
         weeklyConnection = sqlite3.connect("data/closing/weekly_closing.db")
         weeklyDataframe = pd.read_sql_query("SELECT * from stock_data", weeklyConnection)
-        # st.dataframe(weeklyDataframe)
 
         # Query the data from the selected database
         dataFrame = pd.read_sql_query("SELECT * FROM table_name", perfConnection)
@@ -182,158 +397,12 @@ elif page == "Filtered List of Trades":
         scrips = dataFrame['scrip'].unique()
         selected_scrip = st.sidebar.selectbox("Select Scrip", scrips)
 
-        # Filter data for the selected scrip
-        filtered_data = dataFrame[dataFrame['scrip'] == selected_scrip]
-
         # Date range picker
-        start_date = st.sidebar.date_input("Start Date", value=pd.Timestamp("2021-01-01").date())
-        end_date = st.sidebar.date_input("End Date", value=pd.Timestamp("2024-11-11").date())
+        start_date = st.sidebar.date_input("Start Date", value=pd.Timestamp("2019-01-01").date())
+        end_date = st.sidebar.date_input("End Date", value=pd.Timestamp("2020-04-04").date())
 
-        start_date = pd.Timestamp(start_date)
-        end_date = pd.Timestamp(end_date)
-
-        filtered_data['DateTime'] = pd.to_datetime(filtered_data['DateTime'], errors='coerce')
-
-        # Filter trades that were opened (entries) during the date range
-        opened_trades = filtered_data[
-            (filtered_data['Type'].str.contains("Entry", na=False)) &
-            (filtered_data['DateTime'] >= start_date) &
-            (filtered_data['DateTime'] <= end_date)
-        ]
-
-        # Filter trades that were exited (exits) during the date range
-        exited_trades = filtered_data[
-            (filtered_data['Type'].str.contains("Exit", na=False)) &
-            (filtered_data['DateTime'] >= start_date) &
-            (filtered_data['DateTime'] <= end_date)
-        ]
-
-        # Ensure corresponding entry trades exist for exited trades
-        valid_exited_trades = pd.merge(
-            exited_trades, 
-            opened_trades[['Trade', 'DateTime']],  # Only keep Trade IDs and entry DateTime
-            on='Trade',
-            how='inner',
-            suffixes=('_exit', '_entry')
-        )
-
-        # Combine valid exits and opened trades
-        combined_trades = pd.concat([opened_trades, valid_exited_trades])
-
-        # Main page
-        st.title("Filtered Trades")
-        st.write(f"Displaying trades for **{selected_scrip}** from {start_date.date()} to {end_date.date()}")
-
-        # Show filtered data
-        columns_to_display = ['Trade', 'Type', 'Signal', 'DateTime', 'PriceINR','DateTime_entry', 'ProfitINR', 'Profit', 'Contracts']
-
-        combined_trades['DateTime'] = combined_trades['DateTime'].fillna(combined_trades['DateTime_exit'])
-        combined_trades = combined_trades.sort_values(by=['Trade', 'DateTime'], ascending=[False, False])
-
-        st.dataframe(combined_trades[columns_to_display])
-
-        # Profit calculation
-        realised_profit = 0
-        unrealised_profit = 0
-
-        partsOfEntry = 3
-        capital_per_trade = 100000
-
-        # Loop through each row to calculate the profit for each trade
-        # Initialize variables
-
-        results = []  # To store the results for the table
-
-        for _, row in combined_trades.iterrows():
-            if 'Entry' in row['Type']:  # Only consider the entry for the trade
-                entry_price = row['PriceINR']
-                entry_contracts = row['Contracts']
-
-                if not math.isnan(entry_contracts) and not math.isnan(entry_price):
-                    units_purchased = math.floor(capital_per_trade / entry_price / (partsOfEntry / entry_contracts))  # Units
-                    entry_trade_id = row['Trade']
-
-                    # Find the corresponding exit trade
-                    exit_trade = combined_trades[
-                        (combined_trades['Trade'] == entry_trade_id) & 
-                        (combined_trades['Type'] == 'Exit Long')
-                    ]
-
-                    if not exit_trade.empty:
-                        exit_price = exit_trade.iloc[0]['PriceINR']
-                        points_captured = exit_price - entry_price
-                        profit = points_captured * units_purchased
-
-                        # Append to results
-                        results.append({
-                            "Trade ID": entry_trade_id,
-                            "Entry Price": entry_price,
-                            "Exit Price": exit_price,
-                            "Units Purchased": units_purchased,
-                            "Points Captured": points_captured,
-                            "Total PnL": profit,
-                            "Status": "Closed"
-                        })
-
-                        realised_profit += profit
-                # Check open position exists
-                else:
-                    if row['Signal'] == 'Buy':
-                        closest_close = get_closest_close(weeklyDataframe, selected_scrip, end_date)
-                        points_captured = float(closest_close) - entry_price
-
-                        # Filter for the Entry Long trades (Type == 'Entry Long') and those without an Exit Long counterpart
-                        entry_trades = combined_trades[(combined_trades['Type'] == 'Entry Long') & combined_trades['DateTime_entry'].isna()]
-
-                        # Now, for each entry, count how many other entries exist with the same PriceINR and DateTime
-                        entry_trades['Same_Price_DateTime_Count'] = entry_trades.groupby(['PriceINR', 'DateTime'])['PriceINR'].transform('count')
-
-                        # Reduce the count by 1 for trades that do not have a matching trade number (Exit Long)
-                        for idx, row in entry_trades.iterrows():
-                            matching_exit = combined_trades[(combined_trades['Type'] == 'Exit Long') & (combined_trades['DateTime_entry'] == row['DateTime'])]
-                            if matching_exit.empty:
-                                entry_trades.at[idx, 'Same_Price_DateTime_Count'] -= 1
-
-                        # Find the highest Trade number and get its corresponding count
-                        highest_trade = entry_trades['Trade'].max()
-                        highest_trade_count = entry_trades[entry_trades['Trade'] == highest_trade]['Same_Price_DateTime_Count'].values[0]
-                        
-                        # Come up with better logic for this
-                        if highest_trade_count == partsOfEntry:
-                            number_of_open_contracts = 1
-                        elif highest_trade == 2:
-                            number_of_open_contracts = 2
-                        elif highest_trade_count == 0:
-                            number_of_open_contracts = partsOfEntry
-                        
-                        units_per_contract = math.floor(capital_per_trade / entry_price / partsOfEntry)
-
-                        st.write("Closing price: " + str(closest_close))
-                        unrealised_profit = points_captured * units_per_contract * number_of_open_contracts
-
-                        # Append to results
-                        results.append({
-                            "Trade ID": highest_trade,
-                            "Entry Price": entry_price,
-                            "Exit Price": "Holding :)",
-                            "Units Purchased": units_per_contract * number_of_open_contracts,
-                            "Points Captured": points_captured,
-                            "Total PnL": unrealised_profit,
-                            "Status": "Open"
-                        })
-
-        # Convert results to a DataFrame
-        results_df = pd.DataFrame(results)
-
-        # Display the table and total PnL
-        st.write("### Trade Summary")
-        st.dataframe(results_df)
-
-        st.write(f"### Realised PnL: Rs. {realised_profit:.2f}")
-        st.write(f"### Unrealised PnL: Rs. {unrealised_profit:.2f}")
-
-        # Close the database connection
-        perfConnection.close()
+        renderResultForScript(selected_scrip, dataFrame, weeklyDataframe, start_date, end_date)
+        
 
 # Visualization Page
 elif page == "Visualization":
