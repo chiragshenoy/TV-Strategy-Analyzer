@@ -436,11 +436,11 @@ if page == "Merged List of Trades":
     - Rs.1,00,000 is the capital for each trade
     """)
 
-    db_folder_path = "data/lot"
+    db_folder_path = "data/merged_lot"
 
     db_files = [f for f in os.listdir(db_folder_path) if f.endswith('.db') & f.startswith('merged') ]
 
-    show_header = st.radio( "Do you want to display the header?",("Yes", "No"))
+    # show_header = st.radio( "Do you want to display the header?",("Yes", "No"))
 
     # Dropdown to select the .db file from the folder
     if db_files:
