@@ -4,12 +4,13 @@ import sqlite3
 import plotly.express as px
 import os
 import math
+import glob
 
 st.set_page_config(layout="wide")
 
 # Streamlit Sidebar for Page Navigation
 st.sidebar.title("Navigation")
-page = st.sidebar.radio("Go to", [ "Merged List of Trades" ,"Analysis of Trades", "Performance Summary", "List of Trades", "Filtered List of Trades", "Visualization"])
+page = st.sidebar.radio("Go to", ["Merged List of Trades", "Daily Closing Analysis", "Performance Summary", "Weekly Closing", "Filtered List of Trades [Deprecated]", "Analysis of Trades [Deprecated]", "Raw List of Trades [Deprecated]"])
 
 def renderResultForScript(scrip, dataFrame, weeklyDataframe, start_date, end_date, show_summary_trades , show_detailed_trades):
     # Filter data for the selected scrip
@@ -254,7 +255,7 @@ def calculate_and_display_all_metrics(df, filter_column, target_column):
     # Display the dataframe with larger font and styled table
     st.dataframe(metrics_df.style.format(precision=2), use_container_width=True, height = 1000)
 
-def renderResultsForMergedScript(scrip, dataFrame, weeklyDataframe, start_date, end_date, show_summary_trades , show_detailed_trades):
+def renderResultsForMergedScript(scrip, dataFrame, weeklyDataframe, start_date, end_date):
     
     initial_capital = 100000
     profitBookingCount = 3
@@ -421,11 +422,237 @@ def renderResultsForMergedScript(scrip, dataFrame, weeklyDataframe, start_date, 
         }
     }
 
-    return {
+    jsonResult = {
         'portfolio_summary': portfolio_summary,
         'trade_analysis': trade_analysis
     }
 
+    return jsonResult, filtered_data
+
+# Cache database connection
+@st.cache_resource
+def get_daily_closing_database_connection():
+    """
+    Create and cache database connection.
+    This prevents creating new connections on every rerun.
+    """
+    return sqlite3.connect('data/closing/daily_closing.db', check_same_thread=False)
+
+# Cache data loading
+@st.cache_data(ttl=3600)  # Cache for 1 hour
+def load_daily_closing_stock_data():
+    """
+    Load and cache stock data for a specific symbol.
+    TTL ensures data is refreshed periodically.
+    """
+    conn = get_daily_closing_database_connection()
+    df = pd.read_sql_query("SELECT * FROM stock_data", conn)
+    return df
+
+if page == "Daily Closing Analysis":
+    st.title("Daily Closing")
+    st.markdown("""
+    This page allows you to see daily closing of a scrip. This uses the csv files inside data/closing/daily
+    - Choose a scrip name
+    """)
+
+    # Set the directory containing CSV files
+    csv_directory = "data/closing/daily"
+
+    # Get the list of CSV files
+    csv_files = glob.glob(os.path.join(csv_directory, "*.csv"))
+    stock_names = [os.path.basename(file).replace(".csv", "") for file in csv_files]
+
+    st.title("Stock Data Visualization")
+    start_date = st.sidebar.date_input("Start Date", value=pd.Timestamp("2020-01-01").date())
+    end_date = st.sidebar.date_input("End Date", value=pd.Timestamp("2024-12-12").date())
+
+    # Dropdown to select stock
+    selected_stock = st.selectbox("Select a Stock", stock_names)
+    
+    if selected_stock:
+        # Load the selected stock data
+        file_path = os.path.join(csv_directory, f"{selected_stock}.csv")
+        try:
+            data = pd.read_csv(file_path)
+
+            # Ensure columns are as expected
+            if {'time', 'close'}.issubset(data.columns):
+                # Convert 'time' column to datetime
+                data['time'] = pd.to_datetime(data['time'], unit='s')
+
+                filtered_data = data[(data['time'] >= pd.Timestamp(start_date)) & (data['time'] <= pd.Timestamp(end_date))]
+
+                # Plot using Plotly Express
+                fig = px.line(
+                    filtered_data, 
+                    x='time', 
+                    y='close', 
+                    title=f"{selected_stock} - Closing Prices Over Time",
+                    labels={'time': 'Year', 'close': 'Closing Price'},
+                    template="plotly_white",
+                    hover_data={"time": "|%b %d, %Y"}  # Show exact date (e.g., Jan 01, 2021) on hover
+                )
+
+                # Customize x-axis to display years correctly
+                fig.update_xaxes(
+                    dtick="M12",  # Tick every 12 months
+                    tickformat="%Y",  # Format as year
+                    ticklabelmode="period",  # Use full-year display for labels
+                    showgrid=True
+                )
+
+                # Display the interactive plot
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.error("The selected file does not have the required columns: time, open, close.")
+        except Exception as e:
+            st.error(f"An error occurred while loading the file: {e}")
+
+    db_folder_path = "data/merged_lot"
+
+    db_files = [f for f in os.listdir(db_folder_path) if f.endswith('.db')]
+
+    # Dropdown to select the .db file from the folder
+    if db_files:
+        db_file_name = st.selectbox("Select a .db file", db_files)
+        
+        # Construct the full path for the selected file
+        db_file_path = os.path.join(db_folder_path, db_file_name)
+        
+        # Load and process the selected database
+        perfConnection = sqlite3.connect(db_file_path)
+
+        weeklyConnection = sqlite3.connect("data/closing/weekly_closing.db")
+        weeklyDataframe = pd.read_sql_query("SELECT * from stock_data", weeklyConnection)
+
+        # Query the data from the selected database
+        dataFrame = pd.read_sql_query("SELECT * FROM table_name", perfConnection)
+    
+        filtered_data = dataFrame[dataFrame['scrip'] == selected_stock]
+
+        # st.table(filtered_data)
+
+        weeklyConnection = sqlite3.connect("data/closing/weekly_closing.db")
+        weeklyDataframe = pd.read_sql_query("SELECT * from stock_data", weeklyConnection)
+
+        # Query the data from the selected database
+        dataFrame = pd.read_sql_query("SELECT * FROM table_name", perfConnection)
+        
+        st.sidebar.title("Filter Options")
+
+        analysis_results, trades_df = renderResultsForMergedScript(selected_stock, dataFrame, weeklyDataframe, start_date,
+                                                                end_date)
+
+        daily_prices = data
+        trades = trades_df
+
+          # Ensure required columns are present in both files
+        if {'time', 'close'}.issubset(daily_prices.columns) and {'buy_datetime', 'sell_datetime', 'buy_price', 'units_traded'}.issubset(trades.columns):
+            # Convert time columns to datetime
+            daily_prices['time'] = pd.to_datetime(daily_prices['time'], unit='s')
+            trades['buy_datetime'] = pd.to_datetime(trades['buy_datetime'], errors='coerce')
+            trades['sell_datetime'] = pd.to_datetime(trades['sell_datetime'], errors='coerce')
+
+            # Filter daily prices within the selected date range
+            daily_prices = daily_prices[(daily_prices['time'] >= pd.Timestamp(start_date)) & 
+                                        (daily_prices['time'] <= pd.Timestamp(end_date))]
+
+            # Initialize a DataFrame for daily points
+            date_range = pd.date_range(daily_prices['time'].min(), daily_prices['time'].max())
+            points_df = pd.DataFrame({'time': date_range})
+
+            # Calculate daily points captured for each trade
+            trades_points = []
+            for _, trade in trades.iterrows():
+                # Define the active duration of the trade
+                trade_start = max(trade['buy_datetime'], daily_prices['time'].min())
+                trade_end = min(trade['sell_datetime'] if pd.notnull(trade['sell_datetime']) else daily_prices['time'].max(), daily_prices['time'].max())
+
+                # Filter daily prices within the active duration
+                trade_prices = daily_prices[(daily_prices['time'] >= trade_start) & 
+                                            (daily_prices['time'] <= trade_end)]
+
+                # Calculate daily points captured for the trade (daily close - buy price)
+                trade_prices['points'] = (trade_prices['close'] - trade['buy_price'])
+
+                # Include realized points on the sell date
+                if pd.notnull(trade['sell_datetime']):
+                    trade_prices.loc[trade_prices['time'] == trade['sell_datetime'], 'points'] += (
+                        (trade['sell_price'] - trade['buy_price']) * trade['units_traded']
+                    )
+
+                # Append the results
+                trades_points.append(trade_prices[['time', 'points']])
+
+            # Combine points data for all trades
+            all_points = pd.concat(trades_points)
+
+            # Aggregate daily points
+            daily_points = all_points.groupby('time').sum().reset_index()
+
+            # Merge daily points into the main points DataFrame
+            points_df = points_df.merge(daily_points, on='time', how='left').fillna(0)
+
+            # Plot daily points captured
+            fig = px.bar(
+                points_df,
+                x='time',
+                y='points',
+                title="Daily Points Captured",
+                labels={'time': 'Date', 'points': 'Points Captured'},
+                template="plotly_white"
+            )
+
+            # Customize axes
+            fig.update_xaxes(title="Date", showgrid=True)
+            fig.update_yaxes(title="Points Captured")
+
+            # Display the plot
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.error("Ensure both files have the required columns: 'time', 'close' in daily prices, and 'buy_datetime', 'sell_datetime', 'buy_price', 'sell_price', 'units_traded' in trades.")
+
+if page == "Daily Merged List of Trades":
+    st.title("Daily Merged List of Trades")
+    st.markdown("""
+    This page allows you to see daily closing of a scrip
+    - Choose a scrip name
+    """)
+        
+    # Query the data from the selected database
+    df = load_daily_closing_stock_data()
+
+    scrip = st.selectbox("Select Scrip", df['scrip'].unique())
+
+    # Filter data for the selected scrip
+    filtered_df = df[df['scrip'] == scrip]
+
+    # Convert 'time' column to datetime if it is not already in datetime format
+    filtered_df['time'] = pd.to_datetime(filtered_df['time'], unit='s')  # Assuming 'time' is in epoch/Unix timestamp
+
+    # Create a Plotly line chart for the close price vs time
+    fig = px.line(filtered_df, x='time', y='close', title=f'Close Price vs Time for {scrip}')
+
+    # Customize hover information to show the exact date and close price
+    fig.update_traces(
+        hovertemplate='<b>Date: </b>%{x|%Y-%m-%d %H:%M:%S}<br>' +
+                      '<b>Close Price: </b>%{y}<extra></extra>'
+    )
+
+    # Update x-axis to display dates in a human-readable format
+    fig.update_xaxes(
+        title="Time",
+        tickformat="%Y-%m-%d",  # Change this to customize the date format (e.g., "YYYY-MM-DD")
+        showgrid=True,
+        tickangle=45  # Optional: To rotate the tick labels for better readability
+    )
+
+    # Update y-axis title
+    fig.update_yaxes(title="Close Price")
+
+    # Display the Plotly chart
+    st.plotly_chart(fig)
 
 if page == "Merged List of Trades":
     st.title("Merged List of Trades")
@@ -434,11 +661,12 @@ if page == "Merged List of Trades":
     - Choose a time period
     - Get the overall PnL status of the strategy
     - Rs.1,00,000 is the capital for each trade
+    - Works for ANY time frame, as long as you have the list of trades
     """)
 
     db_folder_path = "data/merged_lot"
 
-    db_files = [f for f in os.listdir(db_folder_path) if f.endswith('.db') & f.startswith('merged') ]
+    db_files = [f for f in os.listdir(db_folder_path) if f.endswith('.db')]
 
     # show_header = st.radio( "Do you want to display the header?",("Yes", "No"))
 
@@ -471,8 +699,8 @@ if page == "Merged List of Trades":
 
         for scrip in scrips:
             
-            analysis_results = renderResultsForMergedScript(scrip, dataFrame, weeklyDataframe, start_date,
-                                                                end_date, show_summary_trades = False, show_detailed_trades= False)
+            analysis_results, filtered_df = renderResultsForMergedScript(scrip, dataFrame, weeklyDataframe, start_date,
+                                                                end_date)
             
             # for key, value in analysis_results['portfolio_summary'].items():
             #     st.write(f"{key}: {value}")
@@ -515,18 +743,18 @@ if page == "Merged List of Trades":
         st.header("Total Realised PnL: " + str(total_realised_pnl))
         st.header("Total Unealised PnL: " + str(total_unrealised_pnl))
 
-
-if page == "Analysis of Trades":
-    st.title("Analysis of Trades")
+if page == "Analysis of Trades [Deprecated]":
+    st.title("Analysis of Trades [Deprecated]")
     st.markdown("""
     This page allows you to analyze scrip data from the SQLite database. You can:
     - Choose a time period
     - Get the overall PnL status of the strategy
+    - Accurate, but uses old way of calculating PnL, without merging the trades
     """)
 
     db_folder_path = "data/lot"
 
-    db_files = [f for f in os.listdir(db_folder_path) if f.endswith('.db')]
+    db_files = [f for f in os.listdir(db_folder_path) if f.endswith('.db') and not f.startswith('merged')]
 
     # Dropdown to select the .db file from the folder
     if db_files:
@@ -564,10 +792,8 @@ if page == "Analysis of Trades":
         st.header("Total realised PnL: " + str(total_realised_pnl))
         st.header("Total unrealised PnL: " + str(total_unrealised_pnl))
 
-
-# List of Trades Page
-if page == "List of Trades":
-    st.title("List of Trades")
+if page == "Raw List of Trades [Deprecated]":
+    st.title("Raw List of Trades")
     st.markdown("""
     This page allows you to analyze scrip data from the SQLite database. You can:
     - See all trades
@@ -576,7 +802,7 @@ if page == "List of Trades":
 
     db_folder_path = "data/lot"
 
-    db_files = [f for f in os.listdir(db_folder_path) if f.endswith('.db')]
+    db_files = [f for f in os.listdir(db_folder_path) if f.endswith('.db') and not f.startswith('merged')]
 
     # Dropdown to select the .db file from the folder
     if db_files:
@@ -603,9 +829,7 @@ if page == "List of Trades":
         # Close the database connection
         perfConnection.close()
 
-
-# Data View Page
-elif page == "Filtered List of Trades":
+if page == "Filtered List of Trades [Deprecated]":
     
     st.title("Filtered List of Trades")
 
@@ -613,11 +837,12 @@ elif page == "Filtered List of Trades":
     This page allows you to choose a time range and a script.
     - Get unrealised and realised summary
     - Get trades summary
+    - Works for any Time Frame
     """)
 
     db_folder_path = "data/lot"
 
-    db_files = [f for f in os.listdir(db_folder_path) if f.endswith('.db')]
+    db_files = [f for f in os.listdir(db_folder_path) if f.endswith('.db') and not f.startswith('merged')]
 
     # Dropdown to select the .db file from the folder
     if db_files:
@@ -647,10 +872,8 @@ elif page == "Filtered List of Trades":
 
         renderResultForScript(selected_scrip, dataFrame, weeklyDataframe, start_date, end_date, show_summary_trades = True, show_detailed_trades = True)
         
-
-# Visualization Page
-elif page == "Visualization":
-    st.title("Scrip Close Price Visualization")
+if page == "Weekly Closing":
+    st.title("Scrip Weekly Close Price Visualization")
             
     db_file_path = "data/closing/weekly_closing.db"
         
@@ -692,12 +915,12 @@ elif page == "Visualization":
     st.plotly_chart(fig)
     weeklyConnection.close()
 
-# Settings Page
-elif page == "Settings":
-    st.title("Settings")
-
-elif page == "Performance Summary":
+if page == "Performance Summary":
     st.title("Select Database File for Performance Analysis")
+    st.markdown("""
+        - Considers the entire duration of the stock, we cannot have a specific time period
+        """)
+
     db_folder_path = "data/perf"
 
     db_files = [f for f in os.listdir(db_folder_path) if f.endswith('.db')]
@@ -722,5 +945,3 @@ elif page == "Performance Summary":
 
     else:
         st.write("No .db files found in the folder.")
-
-
