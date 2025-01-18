@@ -5,12 +5,29 @@ import plotly.express as px
 import os
 import math
 import glob
+import seaborn as sns
+import matplotlib.pyplot as plt
+import numpy as np
+import locale
+
+from babel.numbers import format_decimal
 
 st.set_page_config(layout="wide")
 
 # Streamlit Sidebar for Page Navigation
 st.sidebar.title("Navigation")
 page = st.sidebar.radio("Go to", ["Merged List of Trades", "Daily Closing Analysis", "Performance Summary", "Weekly Closing", "Filtered List of Trades [Deprecated]", "Analysis of Trades [Deprecated]", "Raw List of Trades [Deprecated]"])
+
+def format_number(value):
+    """
+    Format a number:
+    - Rounded to 2 decimal places.
+    - Displayed in the Indian number system with commas.
+    """
+    if value is None or pd.isna(value):
+        return "N/A"  # Handle NaN or None values gracefully
+    rounded_value = round(value, 2)  # Round to 2 decimal places
+    return format_decimal(rounded_value, format="#,##,##0.00", locale='en_IN')
 
 def renderResultForScript(scrip, dataFrame, weeklyDataframe, start_date, end_date, show_summary_trades , show_detailed_trades):
     # Filter data for the selected scrip
@@ -216,6 +233,49 @@ def get_closest_close(df, scrip_name, input_time):
     # Return the closing price
     return round(float(closest_row['close']), 2)
 
+def mathematical_plot(df):
+    # Compute metrics
+    mean_pf = df['AllINR'].mean()
+    median_pf = df['AllINR'].median()
+    std_pf = df['AllINR'].std()
+    iqr_pf = df['AllINR'].quantile(0.75) - df['AllINR'].quantile(0.25)
+    skewness = df['AllINR'].skew()
+    kurtosis = df['AllINR'].kurt()
+
+    # Display metrics
+    st.write("### Key Metrics of Profit Factor")
+    st.write(f"Mean Profit Factor: {mean_pf:.2f}")
+    st.write(f"Median Profit Factor: {median_pf:.2f}")
+    st.write(f"Standard Deviation: {std_pf:.2f}")
+    st.write(f"Interquartile Range (IQR): {iqr_pf:.2f}")
+    st.write(f"Skewness: {skewness:.2f}")
+    st.write(f"Kurtosis: {kurtosis:.2f}")
+
+    q1, q3 = df['AllINR'].quantile([0.25, 0.75])
+    iqr = q3 - q1
+    lower_bound = q1 - 1.5 * iqr
+    upper_bound = q3 + 1.5 * iqr
+
+    # Filter outliers
+    filtered_df = df[(df['AllINR'] >= lower_bound) & (df['AllINR'] <= upper_bound)]
+
+    # Recalculate metrics
+    filtered_mean = filtered_df['AllINR'].mean()
+    filtered_median = filtered_df['AllINR'].median()
+    filtered_std = filtered_df['AllINR'].std()
+
+    st.write(f"Filtered Mean: {filtered_mean:.2f}")
+    st.write(f"Filtered Median: {filtered_median:.2f}")
+    st.write(f"Filtered Standard Deviation: {filtered_std:.2f}")
+
+    # Log-transformed Histogram
+    st.write("### Log-transformed Histogram")
+    df['Log_AllINR'] = np.log(df['AllINR'].replace(0, np.nan)).dropna()  # Handle zeros safely
+    fig, ax = plt.subplots()
+    sns.histplot(df['Log_AllINR'], kde=True, bins=30, ax=ax, color='orange')
+    ax.set_title("Log-Transformed Histogram of Profit Factors")
+    st.pyplot(fig)
+
 def calculate_and_display_all_metrics(df, filter_column, target_column):
     """
     Calculate and display all metrics for unique values in a column in a single stylish table.
@@ -229,6 +289,47 @@ def calculate_and_display_all_metrics(df, filter_column, target_column):
 
     # Iterate over all unique values in the filter column
     unique_values = df[filter_column].unique()
+
+    net_profit_df = df[df["Unnamed"] == "Profit Factor"]
+    cleaned_net_profit_df = net_profit_df[['AllINR', 'scrip']].dropna().sort_values(by='AllINR')
+    
+    mathematical_plot(cleaned_net_profit_df)
+
+    # Create the Plotly bar chart
+    fig = px.bar(
+        cleaned_net_profit_df,
+        x='scrip',
+        y='AllINR',
+        title='Profit Factor vs Scrip',
+        labels={'scrip': 'Scrip', 'AllINR': 'AllINR'},
+        text='AllINR',
+    )
+
+    # Customize the chart
+    fig.update_traces(textposition='outside', marker_color='skyblue')
+    fig.update_layout(
+        xaxis_tickangle=45,
+        xaxis=dict(
+            tickmode='linear',
+            automargin=True,
+            showticklabels=True,
+        ),
+        margin=dict(r=20, t=50, b=100, l=50),
+        height=600,
+        width=1200,  # Make the graph wide enough for scrolling
+    )
+
+    # Enable horizontal scrolling
+    fig.update_layout(
+        xaxis=dict(
+            rangeslider=dict(visible=True),  # Add a range slider for interactivity
+            fixedrange=False,
+        )
+    )
+
+    # Display the chart in Streamlit
+    st.plotly_chart(fig, use_container_width=True)
+
     for unique_value in unique_values:
         # Filter the DataFrame
         filtered_df = df[df[filter_column] == unique_value]
@@ -255,7 +356,7 @@ def calculate_and_display_all_metrics(df, filter_column, target_column):
     # Display the dataframe with larger font and styled table
     st.dataframe(metrics_df.style.format(precision=2), use_container_width=True, height = 1000)
 
-def renderResultsForMergedScript(scrip, dataFrame, weeklyDataframe, start_date, end_date):
+def renderResultsForMergedScript(scrip, dataFrame, weeklyDataframe, start_date, end_date, simple_units_purchased_calculation):
     
     initial_capital = 100000
     profitBookingCount = 3
@@ -276,8 +377,23 @@ def renderResultsForMergedScript(scrip, dataFrame, weeklyDataframe, start_date, 
     # Filter data within the date range or open trades
     filtered_data = filtered_data[
         (filtered_data['buy_datetime'] >= start_date) &
-        ((filtered_data['sell_datetime'] <= end_date) | filtered_data['sell_datetime'].isna())
+        (
+            (filtered_data['sell_datetime'] <= end_date) | 
+            (
+                filtered_data['sell_datetime'].isna() & 
+                (filtered_data['buy_datetime'] <= end_date)
+            )
+        ) | 
+        ( (filtered_data['buy_datetime'] >= start_date) & (filtered_data['sell_datetime'] >= end_date) & (filtered_data['buy_datetime'] <= end_date))
     ]
+
+    # Update 'contracts' field to NaN based on the condition
+    filtered_data.loc[
+        (filtered_data['buy_datetime'] >= start_date) & 
+        (filtered_data['buy_datetime'] <= end_date) &
+        (filtered_data['sell_datetime'] >= end_date), 
+        ['contracts', 'sell_datetime', 'sell_price']
+    ] = np.nan
 
     # Process each trade
     for index, row in filtered_data.iterrows():
@@ -321,7 +437,10 @@ def renderResultsForMergedScript(scrip, dataFrame, weeklyDataframe, start_date, 
             sell_price = row['sell_price']
 
             if not math.isnan(row['buy_price']):
-                units_purchased = math.floor(initial_capital / row['buy_price'] / (profitBookingCount / row['contracts']))
+                if simple_units_purchased_calculation:
+                    units_purchased = math.floor(initial_capital / row['buy_price'])
+                else:
+                    units_purchased = math.floor(initial_capital / row['buy_price'] / (profitBookingCount / row['contracts']))
             else:
                 units_purchased = 0
 
@@ -463,13 +582,23 @@ if page == "Daily Closing Analysis":
     csv_files = glob.glob(os.path.join(csv_directory, "*.csv"))
     stock_names = [os.path.basename(file).replace(".csv", "") for file in csv_files]
 
+    db_folder_path = "data/merged_lot"
+
+    db_files = [f for f in os.listdir(db_folder_path) if f.endswith('.db')]
+
     st.title("Stock Data Visualization")
-    start_date = st.sidebar.date_input("Start Date", value=pd.Timestamp("2020-01-01").date())
-    end_date = st.sidebar.date_input("End Date", value=pd.Timestamp("2024-12-12").date())
+
+    st.sidebar.title("Filter Options")
 
     # Dropdown to select stock
     selected_stock = st.selectbox("Select a Stock", stock_names)
+    db_file_name = st.sidebar.selectbox("Select a .db file", db_files)
+    start_date = st.sidebar.date_input("Start Date", value=pd.Timestamp("2020-01-01").date())
+    end_date = st.sidebar.date_input("End Date", value=pd.Timestamp("2024-12-12").date())
     
+    # If buy and sell are all 1 contracts each, make this flag as true
+    simple_units_purchased_calculation = st.checkbox("Is simple contract trades?")
+
     if selected_stock:
         # Load the selected stock data
         file_path = os.path.join(csv_directory, f"{selected_stock}.csv")
@@ -509,13 +638,8 @@ if page == "Daily Closing Analysis":
         except Exception as e:
             st.error(f"An error occurred while loading the file: {e}")
 
-    db_folder_path = "data/merged_lot"
-
-    db_files = [f for f in os.listdir(db_folder_path) if f.endswith('.db')]
-
     # Dropdown to select the .db file from the folder
     if db_files:
-        db_file_name = st.selectbox("Select a .db file", db_files)
         
         # Construct the full path for the selected file
         db_file_path = os.path.join(db_folder_path, db_file_name)
@@ -539,10 +663,8 @@ if page == "Daily Closing Analysis":
         # Query the data from the selected database
         dataFrame = pd.read_sql_query("SELECT * FROM table_name", perfConnection)
         
-        st.sidebar.title("Filter Options")
-
         analysis_results, trades_df = renderResultsForMergedScript(selected_stock, dataFrame, weeklyDataframe, start_date,
-                                                                end_date)
+                                                                end_date, simple_units_purchased_calculation = simple_units_purchased_calculation)
 
         daily_prices = data
         trades = trades_df
@@ -672,7 +794,8 @@ if page == "Merged List of Trades":
 
     # Dropdown to select the .db file from the folder
     if db_files:
-        db_file_name = st.selectbox("Select a .db file", db_files)
+        st.sidebar.title("Filter Options")
+        db_file_name = st.sidebar.selectbox("Select a .db file", db_files)
         
         # Construct the full path for the selected file
         db_file_path = os.path.join(db_folder_path, db_file_name)
@@ -685,23 +808,30 @@ if page == "Merged List of Trades":
 
         # Query the data from the selected database
         dataFrame = pd.read_sql_query("SELECT * FROM table_name", perfConnection)
-        
-        st.sidebar.title("Filter Options")
 
         # Select scrip
         scrips = dataFrame['scrip'].unique()
 
-        start_date = st.sidebar.date_input("Start Date", value=pd.Timestamp("2020-01-01").date())
-        end_date = st.sidebar.date_input("End Date", value=pd.Timestamp("2024-12-12").date())
+        start_date = st.sidebar.date_input("Start Date", value=pd.Timestamp("2016-01-01").date())
+        end_date = st.sidebar.date_input("End Date", value=pd.Timestamp("2020-01-01").date())
+        simple_units_purchased_calculation = st.checkbox("Is simple contract trades?")
 
         total_realised_pnl = 0
         total_unrealised_pnl = 0
 
+        total_number_of_stocks_traded = 0
+
         for scrip in scrips:
             
             analysis_results, filtered_df = renderResultsForMergedScript(scrip, dataFrame, weeklyDataframe, start_date,
-                                                                end_date)
+                                                                end_date, simple_units_purchased_calculation)
             
+            closed_trade_count = analysis_results['trade_analysis']['closed_trades']['total_count']
+            open_trade_count = analysis_results['trade_analysis']['open_trades']['total_count']
+        
+            if (closed_trade_count > 0 or open_trade_count > 0 ):
+                total_number_of_stocks_traded = total_number_of_stocks_traded + 1
+
             # for key, value in analysis_results['portfolio_summary'].items():
             #     st.write(f"{key}: {value}")
 
@@ -740,8 +870,10 @@ if page == "Merged List of Trades":
             # st.subheader("Trade Analysis")
             # st.table(trade_analysis_df)
         
-        st.header("Total Realised PnL: " + str(total_realised_pnl))
-        st.header("Total Unealised PnL: " + str(total_unrealised_pnl))
+        st.header("Total Realised PnL: " + format_number(total_realised_pnl))
+        st.header("Total Unealised PnL: " + format_number(total_unrealised_pnl))
+        st.header("Total Stocks Traded: " + format_number(total_number_of_stocks_traded))
+
 
 if page == "Analysis of Trades [Deprecated]":
     st.title("Analysis of Trades [Deprecated]")
