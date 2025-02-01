@@ -1,26 +1,17 @@
-import streamlit as st
 import pandas as pd
-import sqlite3
 import plotly.express as px
-import os
-import math
-import glob
-import seaborn as sns
-import matplotlib.pyplot as plt
-import numpy as np
+import streamlit as st
+
 import db_utils
-from scipy.stats import ttest_1samp
-from scipy.stats import shapiro
 
-from utils import calculate_and_display_all_metrics
 
-def renderDailyClosing():
+def render_daily_closing():
     st.title("Daily Closing")
     st.markdown("""
     This page allows you to see daily closing of a scrip
     - Choose a scrip name
     """)
-        
+
     # Query the data from the selected database
     df = db_utils.load_daily_closing_stock_data()
 

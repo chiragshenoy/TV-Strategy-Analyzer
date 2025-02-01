@@ -1,28 +1,20 @@
-import streamlit as st
-import pandas as pd
 import sqlite3
-import plotly.express as px
-import os
-import math
-import glob
-import seaborn as sns
-import matplotlib.pyplot as plt
-import numpy as np
-import db_utils
-from scipy.stats import ttest_1samp
-from scipy.stats import shapiro
 
-def renderWeeklyClosing():
-    
+import pandas as pd
+import plotly.express as px
+import streamlit as st
+
+
+def render_weekly_closing():
     st.title("Scrip Weekly Close Price Visualization")
-            
+
     db_file_path = "data/closing/weekly_closing.db"
-        
+
     # Load and process the selected database
-    weeklyConnection = sqlite3.connect(db_file_path)
-        
+    weekly_connection = sqlite3.connect(db_file_path)
+
     # Query the data from the selected database
-    df = pd.read_sql_query("SELECT * FROM stock_data", weeklyConnection)
+    df = pd.read_sql_query("SELECT * FROM stock_data", weekly_connection)
 
     scrip = st.selectbox("Select Scrip", df['scrip'].unique())
 
@@ -54,4 +46,4 @@ def renderWeeklyClosing():
 
     # Display the Plotly chart
     st.plotly_chart(fig)
-    weeklyConnection.close()
+    weekly_connection.close()

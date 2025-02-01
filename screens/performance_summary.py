@@ -14,7 +14,7 @@ from scipy.stats import shapiro
 
 from utils import calculate_and_display_all_metrics
 
-def renderPerformanceSummary():
+def render_performance_summary():
     st.title("Select Database File for Performance Analysis")
     st.markdown("""
         - Considers the entire duration of the stock, we cannot have a specific time period
@@ -32,15 +32,15 @@ def renderPerformanceSummary():
         db_file_path = os.path.join(db_folder_path, db_file_name)
         
         # Load and process the selected database
-        perfConnection = sqlite3.connect(db_file_path)
+        perf_connection = sqlite3.connect(db_file_path)
         
         # Query the data from the selected database
-        df = pd.read_sql_query("SELECT * FROM table_name", perfConnection)
+        df = pd.read_sql_query("SELECT * FROM table_name", perf_connection)
         
         calculate_and_display_all_metrics(df=df, filter_column='Unnamed',target_column='AllINR', display_charts=True)
 
         # Close the database connection
-        perfConnection.close()
+        perf_connection.close()
 
     else:
         st.write("No .db files found in the folder.")

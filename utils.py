@@ -201,3 +201,207 @@ def mathematical_plot(df, display_charts):
         "lower_bound": lower_bound,
         "upper_bound": upper_bound,
     }
+
+
+def render_result_for_script(scrip, data_frame, weekly_dataframe, start_date, end_date, simple_units_purchased_calculation,
+                             show_tables):
+    initial_capital = 100000
+    profit_booking_count = 3
+
+    # Filter data for the specific scrip
+    filtered_data = data_frame[data_frame['scrip'] == scrip]
+    filtered_data = filtered_data.drop(columns=['drawdown_inr', 'cum_profit', 'cum_profit_inr', 'runup', 'runup_inr',
+                                                'drawdown', 'scrip', 'price_inr', 'points_captured'])
+
+    # Convert start_date and end_date to Timestamps
+    start_date = pd.Timestamp(start_date)
+    end_date = pd.Timestamp(end_date)
+
+    # Ensure datetime columns are properly converted
+    filtered_data.loc[:, 'buy_datetime'] = pd.to_datetime(filtered_data['buy_datetime'], errors='coerce')
+    filtered_data.loc[:, 'sell_datetime'] = pd.to_datetime(filtered_data['sell_datetime'], errors='coerce')
+
+    # Filter data within the date range or open trades
+    filtered_data = filtered_data[
+        (filtered_data['buy_datetime'] >= start_date) &
+        (
+                (filtered_data['sell_datetime'] <= end_date) |
+                (
+                        filtered_data['sell_datetime'].isna() &
+                        (filtered_data['buy_datetime'] <= end_date)
+                )
+        ) |
+        ((filtered_data['buy_datetime'] >= start_date) & (filtered_data['sell_datetime'] >= end_date) & (
+                    filtered_data['buy_datetime'] <= end_date))
+        ]
+
+    # Update 'contracts' field to NaN based on the condition
+    filtered_data.loc[
+        (filtered_data['buy_datetime'] >= start_date) &
+        (filtered_data['buy_datetime'] <= end_date) &
+        (filtered_data['sell_datetime'] >= end_date),
+        ['contracts', 'sell_datetime', 'sell_price']
+    ] = np.nan
+
+    # Process each trade
+    for index, row in filtered_data.iterrows():
+
+        # Case of open trade
+        if math.isnan(row['contracts']):
+            # Find the latest trade and calculate matching trades
+            latest_trade = filtered_data.loc[filtered_data['trade_id'].idxmax()]
+            latest_buy_price = latest_trade['buy_price']
+            latest_buy_datetime = latest_trade['buy_datetime']
+
+            matching_trades = len(filtered_data[
+                                      (filtered_data['buy_price'] == latest_buy_price) &
+                                      (filtered_data['buy_datetime'] == latest_buy_datetime)
+                                      ])
+
+            # Determine the number of open contracts
+            if matching_trades == profit_booking_count:
+                number_of_open_contracts = 1
+            elif matching_trades == 2:
+                number_of_open_contracts = 2
+            else:
+                number_of_open_contracts = profit_booking_count
+
+            # Error handling
+            if math.isnan(number_of_open_contracts):
+                number_of_open_contracts = 1
+            if math.isnan(latest_buy_price):
+                latest_buy_price = 1
+
+            units_per_contract = math.floor(initial_capital / latest_buy_price / profit_booking_count)
+
+            if math.isnan(units_per_contract):
+                units_per_contract = 1
+
+            filtered_data.loc[index, 'units_traded'] = units_per_contract * number_of_open_contracts
+
+        else:
+            # Calculate units traded for specified contracts
+            buy_price = row['buy_price']
+            sell_price = row['sell_price']
+
+            if not math.isnan(row['buy_price']):
+                # if simple_units_purchased_calculation:
+                #     units_purchased = math.floor(initial_capital / row['buy_price'])
+                # else:
+                #     units_purchased = math.floor(initial_capital / row['buy_price'])
+                units_purchased = row['contracts']
+            else:
+                units_purchased = 0
+
+            filtered_data.loc[index, 'units_traded'] = units_purchased
+
+            if not math.isnan(row['buy_price']) and not math.isnan(row['sell_price']):
+                filtered_data.loc[index, 'points_realised'] = sell_price - buy_price
+                filtered_data.loc[index, 'pnl'] = (sell_price - buy_price) * units_purchased
+
+    if show_tables:
+        st.subheader(f"Displaying trades for **{scrip}** from {start_date.date()} to {end_date.date()}")
+
+    # Sort and display data
+    filtered_data = filtered_data.sort_values(by=['trade_id'], ascending=[False])
+
+    if show_tables:
+        st.dataframe(filtered_data)
+
+    # Separate closed and open trades
+    closed_trades = filtered_data[filtered_data['sell_datetime'].notna()]
+    open_trades = filtered_data[filtered_data['sell_datetime'].isna()]
+
+    open_trades = open_trades.copy()
+    closed_trades = closed_trades.copy()
+
+    closest_close = round(get_closest_close(weekly_dataframe, scrip, end_date), 2)
+
+    if show_tables:
+        st.write("Closing Price: " + str(closest_close))
+
+    # Calculate realized metrics
+    if len(closed_trades) > 0:
+
+        realized_profit_loss = closed_trades.apply(
+            lambda row: round(row['sell_price'] * row['units_traded'] if not math.isnan(row['units_traded']) else 1, 2),
+            axis=1
+        )
+
+        # Assign the computed values to the DataFrame
+        closed_trades.loc[:, 'realized_profit_loss'] = realized_profit_loss
+
+        total_realized_profit_loss = 0
+
+        if 'pnl' in closed_trades.columns:
+            total_realized_profit_loss = closed_trades['pnl'].sum()
+
+        realized_metrics = {
+            'total_realized_profit_loss': total_realized_profit_loss,
+            'total_closed_trades': len(closed_trades),
+            'profitable_closed_trades': len(closed_trades[closed_trades['realized_profit_loss'] > 0]),
+            'unprofitable_closed_trades': len(closed_trades[closed_trades['realized_profit_loss'] <= 0]),
+            'win_rate': len(closed_trades[closed_trades['realized_profit_loss'] > 0]) / len(closed_trades) * 100
+        }
+    else:
+        realized_metrics = {
+            'total_realized_profit_loss': 0,
+            'total_closed_trades': 0,
+            'profitable_closed_trades': 0,
+            'unprofitable_closed_trades': 0,
+            'win_rate': 0
+        }
+
+    # Calculate unrealized metrics
+    if len(open_trades) > 0:
+        open_trades.loc[:, 'current_market_price'] = closest_close
+
+        # Compute the 'unrealized_profit_loss' values first
+        unrealized_profit_loss = open_trades.apply(
+            lambda row: round((closest_close - row['buy_price']) * row['units_traded'], 2), axis=1
+        )
+
+        # Assign the computed values to the DataFrame
+        open_trades.loc[:, 'unrealized_profit_loss'] = unrealized_profit_loss
+
+        unrealized_metrics = {
+            'total_unrealized_profit_loss': open_trades['unrealized_profit_loss'].sum(),
+            'total_open_trades': len(open_trades)
+        }
+    else:
+        unrealized_metrics = {
+            'total_unrealized_profit_loss': 0,
+            'total_open_trades': 0
+        }
+
+    # Portfolio summary
+    portfolio_summary = {
+        'scrip': scrip,
+        'total_realized_profit_loss': round(realized_metrics['total_realized_profit_loss'], 2),
+        'total_unrealized_profit_loss': round(unrealized_metrics['total_unrealized_profit_loss'], 2),
+        'total_profit_loss': round(
+            realized_metrics['total_realized_profit_loss'] + unrealized_metrics['total_unrealized_profit_loss'], 2),
+        'current_portfolio_value': round(
+            initial_capital + realized_metrics['total_realized_profit_loss'] + unrealized_metrics[
+                'total_unrealized_profit_loss'], 2)
+    }
+
+    # Detailed trade analysis
+    trade_analysis = {
+        'closed_trades': {
+            'total_count': realized_metrics['total_closed_trades'],
+            'profitable_count': realized_metrics['profitable_closed_trades'],
+            'unprofitable_count': realized_metrics['unprofitable_closed_trades'],
+            'win_rate': realized_metrics['win_rate']
+        },
+        'open_trades': {
+            'total_count': unrealized_metrics['total_open_trades']
+        }
+    }
+
+    jsonResult = {
+        'portfolio_summary': portfolio_summary,
+        'trade_analysis': trade_analysis
+    }
+
+    return jsonResult, filtered_data

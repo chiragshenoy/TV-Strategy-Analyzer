@@ -1,21 +1,15 @@
-import streamlit as st
-import pandas as pd
-import sqlite3
-import plotly.express as px
-import os
-import math
 import glob
-import seaborn as sns
-import matplotlib.pyplot as plt
-import numpy as np
-import db_utils
-from scipy.stats import ttest_1samp
-from scipy.stats import shapiro
+import os
+import sqlite3
 
-from utils import calculate_and_display_all_metrics
+import pandas as pd
+import plotly.express as px
+import streamlit as st
+
+from utils import render_result_for_script
 
 
-def renderDailyClosingAnalysisFromCsv():
+def render_daily_closing_analysis_from_csv():
     st.title("Daily Closing From CSV")
     st.markdown("""
     This page allows you to see daily closing of a scrip. This uses the csv files inside data/closing/daily
@@ -42,7 +36,7 @@ def renderDailyClosingAnalysisFromCsv():
     db_file_name = st.sidebar.selectbox("Select a .db file", db_files)
     start_date = st.sidebar.date_input("Start Date", value=pd.Timestamp("2020-01-01").date())
     end_date = st.sidebar.date_input("End Date", value=pd.Timestamp("2024-12-12").date())
-    
+
     # If buy and sell are all 1 contracts each, make this flag as true
     simple_units_purchased_calculation = st.checkbox("Is simple contract trades?")
 
@@ -57,13 +51,14 @@ def renderDailyClosingAnalysisFromCsv():
                 # Convert 'time' column to datetime
                 data['time'] = pd.to_datetime(data['time'], unit='s')
 
-                filtered_data = data[(data['time'] >= pd.Timestamp(start_date)) & (data['time'] <= pd.Timestamp(end_date))]
+                filtered_data = data[
+                    (data['time'] >= pd.Timestamp(start_date)) & (data['time'] <= pd.Timestamp(end_date))]
 
                 # Plot using Plotly Express
                 fig = px.line(
-                    filtered_data, 
-                    x='time', 
-                    y='close', 
+                    filtered_data,
+                    x='time',
+                    y='close',
                     title=f"{selected_stock} - Closing Prices Over Time",
                     labels={'time': 'Year', 'close': 'Closing Price'},
                     template="plotly_white",
@@ -87,45 +82,47 @@ def renderDailyClosingAnalysisFromCsv():
 
     # Dropdown to select the .db file from the folder
     if db_files:
-        
+
         # Construct the full path for the selected file
         db_file_path = os.path.join(db_folder_path, db_file_name)
-        
-        # Load and process the selected database
-        perfConnection = sqlite3.connect(db_file_path)
 
-        weeklyConnection = sqlite3.connect("data/closing/weekly_closing.db")
-        weeklyDataframe = pd.read_sql_query("SELECT * from stock_data", weeklyConnection)
+        # Load and process the selected database
+        perf_connection = sqlite3.connect(db_file_path)
+
+        weekly_connection = sqlite3.connect("data/closing/weekly_closing.db")
+        weekly_dataframe = pd.read_sql_query("SELECT * from stock_data", weekly_connection)
 
         # Query the data from the selected database
-        dataFrame = pd.read_sql_query("SELECT * FROM table_name", perfConnection)
-    
-        filtered_data = dataFrame[dataFrame['scrip'] == selected_stock]
+        data_frame = pd.read_sql_query("SELECT * FROM table_name", perf_connection)
+
+        filtered_data = data_frame[data_frame['scrip'] == selected_stock]
 
         # st.table(filtered_data)
 
-        weeklyConnection = sqlite3.connect("data/closing/weekly_closing.db")
-        weeklyDataframe = pd.read_sql_query("SELECT * from stock_data", weeklyConnection)
+        weekly_connection = sqlite3.connect("data/closing/weekly_closing.db")
+        weekly_dataframe = pd.read_sql_query("SELECT * from stock_data", weekly_connection)
 
         # Query the data from the selected database
-        dataFrame = pd.read_sql_query("SELECT * FROM table_name", perfConnection)
-        
-        analysis_results, trades_df = renderResultsForScript(selected_stock, dataFrame, weeklyDataframe, start_date,
-                                                                end_date, simple_units_purchased_calculation = simple_units_purchased_calculation,
-                                                                showTables = True)
+        data_frame = pd.read_sql_query("SELECT * FROM table_name", perf_connection)
+
+        analysis_results, trades_df = render_result_for_script(selected_stock, data_frame, weekly_dataframe, start_date,
+                                                               end_date,
+                                                               simple_units_purchased_calculation=simple_units_purchased_calculation,
+                                                               show_tables=True)
 
         daily_prices = data
         trades = trades_df
 
-          # Ensure required columns are present in both files
-        if {'time', 'close'}.issubset(daily_prices.columns) and {'buy_datetime', 'sell_datetime', 'buy_price', 'units_traded'}.issubset(trades.columns):
+        # Ensure required columns are present in both files
+        if {'time', 'close'}.issubset(daily_prices.columns) and {'buy_datetime', 'sell_datetime', 'buy_price',
+                                                                 'units_traded'}.issubset(trades.columns):
             # Convert time columns to datetime
             daily_prices['time'] = pd.to_datetime(daily_prices['time'], unit='s')
             trades['buy_datetime'] = pd.to_datetime(trades['buy_datetime'], errors='coerce')
             trades['sell_datetime'] = pd.to_datetime(trades['sell_datetime'], errors='coerce')
 
             # Filter daily prices within the selected date range
-            daily_prices = daily_prices[(daily_prices['time'] >= pd.Timestamp(start_date)) & 
+            daily_prices = daily_prices[(daily_prices['time'] >= pd.Timestamp(start_date)) &
                                         (daily_prices['time'] <= pd.Timestamp(end_date))]
 
             # Initialize a DataFrame for daily points
@@ -137,10 +134,12 @@ def renderDailyClosingAnalysisFromCsv():
             for _, trade in trades.iterrows():
                 # Define the active duration of the trade
                 trade_start = max(trade['buy_datetime'], daily_prices['time'].min())
-                trade_end = min(trade['sell_datetime'] if pd.notnull(trade['sell_datetime']) else daily_prices['time'].max(), daily_prices['time'].max())
+                trade_end = min(
+                    trade['sell_datetime'] if pd.notnull(trade['sell_datetime']) else daily_prices['time'].max(),
+                    daily_prices['time'].max())
 
                 # Filter daily prices within the active duration
-                trade_prices = daily_prices[(daily_prices['time'] >= trade_start) & 
+                trade_prices = daily_prices[(daily_prices['time'] >= trade_start) &
                                             (daily_prices['time'] <= trade_end)]
 
                 # Calculate daily points captured for the trade (daily close - buy price)
@@ -149,7 +148,7 @@ def renderDailyClosingAnalysisFromCsv():
                 # Include realized points on the sell date
                 if pd.notnull(trade['sell_datetime']):
                     trade_prices.loc[trade_prices['time'] == trade['sell_datetime'], 'points'] += (
-                        (trade['sell_price'] - trade['buy_price']) * trade['units_traded']
+                            (trade['sell_price'] - trade['buy_price']) * trade['units_traded']
                     )
 
                 # Append the results
@@ -181,4 +180,5 @@ def renderDailyClosingAnalysisFromCsv():
             # Display the plot
             st.plotly_chart(fig, use_container_width=True)
         else:
-            st.error("Ensure both files have the required columns: 'time', 'close' in daily prices, and 'buy_datetime', 'sell_datetime', 'buy_price', 'sell_price', 'units_traded' in trades.")
+            st.error(
+                "Ensure both files have the required columns: 'time', 'close' in daily prices, and 'buy_datetime', 'sell_datetime', 'buy_price', 'sell_price', 'units_traded' in trades.")
