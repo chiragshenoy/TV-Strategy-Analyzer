@@ -15,8 +15,9 @@ st.set_page_config(layout="wide")
 # Streamlit Sidebar for Page Navigation
 st.sidebar.title("Navigation")
 page = st.sidebar.radio("Go to",
-                        ["List of Trades", "Daily Closing from CSV", "Performance Summary", "Performance Comparison",
-                         "Weekly Closing", "Daily Closing"])
+                        ["Weekly Closing", "List of Trades", "Daily Closing from CSV", "Performance Summary",
+                         "Performance Comparison",
+                         "Daily Closing"])
 
 if page == "List of Trades":
     st.title("List of Trades")
@@ -31,13 +32,14 @@ if page == "List of Trades":
     db_folder_path = "data/merged_lot"
 
     db_files = [f for f in os.listdir(db_folder_path) if f.endswith('.db')]
-    db_files.sort()
-
-    # show_header = st.radio( "Do you want to display the header?",("Yes", "No"))
+    db_files.sort(reverse=True)
 
     # Dropdown to select the .db file from the folder
     if db_files:
+
         st.sidebar.title("Filter Options")
+        start_date = st.sidebar.date_input("Start Date", value=pd.Timestamp("2016-01-01").date())
+        end_date = st.sidebar.date_input("End Date", value=pd.Timestamp("2020-01-01").date())
         db_file_name = st.sidebar.selectbox("Select a .db file", db_files)
 
         # Construct the full path for the selected file
@@ -54,11 +56,6 @@ if page == "List of Trades":
 
         # Select scrip
         scrips = dataFrame['scrip'].unique()
-
-        start_date = st.sidebar.date_input("Start Date", value=pd.Timestamp("2016-01-01").date())
-        end_date = st.sidebar.date_input("End Date", value=pd.Timestamp("2020-01-01").date())
-
-        simple_units_purchased_calculation = st.checkbox("Is simple contract trades?")
         showTables = st.checkbox("Show trades?")
 
         total_realised_pnl = 0
@@ -72,7 +69,7 @@ if page == "List of Trades":
 
             analysis_results, filtered_df = utils.render_result_for_script(scrip, dataFrame, weeklyDataframe,
                                                                            start_date,
-                                                                           end_date, simple_units_purchased_calculation,
+                                                                           end_date,
                                                                            show_tables=showTables)
 
             closed_trade_count = analysis_results['trade_analysis']['closed_trades']['total_count']
@@ -127,6 +124,19 @@ if page == "List of Trades":
         st.header("Total Realised PnL: " + utils.format_number(total_realised_pnl))
         st.header("Total Unealised PnL: " + utils.format_number(total_unrealised_pnl))
         st.header("Total Stocks Traded: " + utils.format_number(total_number_of_stocks_traded))
+
+        st.header("CAGR Calculation")
+
+        initial_portfolio_value = total_number_of_stocks_traded * 100000
+        final_portfolio_value = initial_portfolio_value + total_realised_pnl + total_unrealised_pnl
+
+        st.write("Total investment Rs." + utils.format_number(initial_portfolio_value))
+        st.write("Final investment Rs." + utils.format_number(final_portfolio_value))
+
+        # Calculate CAGR
+        n_years = (pd.to_datetime(end_date) - pd.to_datetime(start_date)).days / 365
+        cagr = (final_portfolio_value / initial_portfolio_value) ** (1 / n_years) - 1
+        st.header(f"CAGR: {cagr * 100:.2f}%")
 
 if page == "Weekly Closing":
     render_weekly_closing()

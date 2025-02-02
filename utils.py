@@ -203,10 +203,9 @@ def mathematical_plot(df, display_charts):
     }
 
 
-def render_result_for_script(scrip, data_frame, weekly_dataframe, start_date, end_date, simple_units_purchased_calculation,
+def render_result_for_script(scrip, data_frame, weekly_dataframe, start_date, end_date,
                              show_tables):
     initial_capital = 100000
-    profit_booking_count = 3
 
     # Filter data for the specific scrip
     filtered_data = data_frame[data_frame['scrip'] == scrip]
@@ -248,36 +247,54 @@ def render_result_for_script(scrip, data_frame, weekly_dataframe, start_date, en
 
         # Case of open trade
         if math.isnan(row['contracts']):
-            # Find the latest trade and calculate matching trades
-            latest_trade = filtered_data.loc[filtered_data['trade_id'].idxmax()]
-            latest_buy_price = latest_trade['buy_price']
-            latest_buy_datetime = latest_trade['buy_datetime']
+            open_trade = filtered_data[filtered_data["sell_datetime"].isna()].iloc[0]
+            open_buy_datetime = open_trade["buy_datetime"]
+            open_buy_price = open_trade["buy_price"]
 
-            matching_trades = len(filtered_data[
-                                      (filtered_data['buy_price'] == latest_buy_price) &
-                                      (filtered_data['buy_datetime'] == latest_buy_datetime)
-                                      ])
+            if not math.isnan(open_buy_price):
 
-            # Determine the number of open contracts
-            if matching_trades == profit_booking_count:
-                number_of_open_contracts = 1
-            elif matching_trades == 2:
-                number_of_open_contracts = 2
-            else:
-                number_of_open_contracts = profit_booking_count
+                # Find matched trades (same buy_datetime and buy_price) that are NOT open
+                matched_trades = filtered_data[
+                    (filtered_data["buy_datetime"] == open_buy_datetime) &
+                    (filtered_data["buy_price"] == open_buy_price) &
+                    (filtered_data["sell_datetime"].notna())  # Exclude open positions
+                    ]
 
-            # Error handling
-            if math.isnan(number_of_open_contracts):
-                number_of_open_contracts = 1
-            if math.isnan(latest_buy_price):
-                latest_buy_price = 1
+                exited_contracts = matched_trades["contracts"].sum()
+                initial_contracts = math.floor(initial_capital / open_buy_price)
+                remaining_contracts = initial_contracts - exited_contracts
+                filtered_data.loc[filtered_data["sell_datetime"].isna(), 'units_traded'] = remaining_contracts
 
-            units_per_contract = math.floor(initial_capital / latest_buy_price / profit_booking_count)
-
-            if math.isnan(units_per_contract):
-                units_per_contract = 1
-
-            filtered_data.loc[index, 'units_traded'] = units_per_contract * number_of_open_contracts
+            # # Find the latest trade and calculate matching trades
+            # latest_trade = filtered_data.loc[filtered_data['trade_id'].idxmax()]
+            # latest_buy_price = latest_trade['buy_price']
+            # latest_buy_datetime = latest_trade['buy_datetime']
+            #
+            # matching_trades = len(filtered_data[
+            #                           (filtered_data['buy_price'] == latest_buy_price) &
+            #                           (filtered_data['buy_datetime'] == latest_buy_datetime)
+            #                           ])
+            #
+            # # Determine the number of open contracts
+            # if matching_trades == profit_booking_count:
+            #     number_of_open_contracts = 1
+            # elif matching_trades == 2:
+            #     number_of_open_contracts = 2
+            # else:
+            #     number_of_open_contracts = profit_booking_count
+            #
+            # # Error handling
+            # if math.isnan(number_of_open_contracts):
+            #     number_of_open_contracts = 1
+            # if math.isnan(latest_buy_price):
+            #     latest_buy_price = 1
+            #
+            # units_per_contract = math.floor(initial_capital / latest_buy_price / profit_booking_count)
+            #
+            # if math.isnan(units_per_contract):
+            #     units_per_contract = 1
+            #
+            # filtered_data.loc[index, 'units_traded'] = units_per_contract * number_of_open_contracts
 
         else:
             # Calculate units traded for specified contracts
