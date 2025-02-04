@@ -33,7 +33,7 @@ def render_weekly_closing():
     trades_connection = sqlite3.connect(db_file_path)
     weeklyDataframe = pd.read_sql_query("SELECT * from table_name", trades_connection)
 
-    db_file_path = "data/closing/weekly_closing_2.db"
+    db_file_path = "data/closing/weekly_closing.db"
 
     # Load and process the selected database
     weekly_closing_connection = sqlite3.connect(db_file_path)
