@@ -5,6 +5,7 @@ import pandas as pd
 import streamlit as st
 
 import utils
+from screens.capital_usage import render_capital_usage
 from screens.daily_closing import render_daily_closing
 from screens.performance_comparison import render_performance_comparison
 from screens.performance_summary import render_performance_summary
@@ -15,7 +16,7 @@ st.set_page_config(layout="wide")
 # Streamlit Sidebar for Page Navigation
 st.sidebar.title("Navigation")
 page = st.sidebar.radio("Go to",
-                        ["Weekly Closing", "List of Trades", "Daily Closing from CSV", "Performance Summary",
+                        ["Capital Usage" ,"List of Trades", "Weekly Closing", "Daily Closing from CSV", "Performance Summary",
                          "Performance Comparison",
                          "Daily Closing"])
 
@@ -46,13 +47,13 @@ if page == "List of Trades":
         db_file_path = os.path.join(db_folder_path, db_file_name)
 
         # Load and process the selected database
-        perfConnection = sqlite3.connect(db_file_path)
+        strategy_connection = sqlite3.connect(db_file_path)
 
         weeklyConnection = sqlite3.connect("data/closing/weekly_closing.db")
         weeklyDataframe = pd.read_sql_query("SELECT * from stock_data", weeklyConnection)
 
         # Query the data from the selected database
-        dataFrame = pd.read_sql_query("SELECT * FROM table_name", perfConnection)
+        dataFrame = pd.read_sql_query("SELECT * FROM table_name", strategy_connection)
 
         # Select scrip
         scrips = dataFrame['scrip'].unique()
@@ -153,3 +154,6 @@ if page == "Daily Closing Analysis from CSV":
 
 if page == "Daily Closing":
     render_daily_closing()
+
+if page == "Capital Usage":
+    render_capital_usage()
