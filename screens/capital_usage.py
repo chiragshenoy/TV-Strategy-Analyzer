@@ -3,11 +3,9 @@ import os
 import sqlite3
 
 import pandas as pd
-import streamlit as st
-import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
-import matplotlib.pyplot as plt
+import streamlit as st
 
 import utils
 
@@ -20,7 +18,7 @@ def render_capital_usage():
 
     st.sidebar.title("Filter Options")
     start_date = st.sidebar.date_input("Start Date", value=pd.Timestamp("2016-01-01").date())
-    end_date = st.sidebar.date_input("End Date", value=pd.Timestamp("2020-01-01").date())
+    end_date = st.sidebar.date_input("End Date", value=pd.Timestamp("2016-04-04").date())
     db_file_name = st.sidebar.selectbox("Select a .db file", db_files)
 
     # Construct the full path for the selected file
@@ -79,7 +77,7 @@ def render_capital_usage():
 
     plot_realised_pnl_over_time(dataFrame)
     plot_capital_usage_over_time(dataFrame)
-    # plot_unrealised_pnl_over_time(dataFrame, end_date)
+    plot_unrealised_pnl_over_time(dataFrame, end_date)
 
 
 def plot_capital_usage_over_time(df):
@@ -112,7 +110,7 @@ def plot_capital_usage_over_time(df):
     fig.update_layout(
         title="Capital Change Over Time",
         xaxis_title="Date",
-        yaxis_title="Cumulative PnL",
+        yaxis_title="Capital",
         template="plotly_dark",
         hovermode="x",
     )
@@ -121,22 +119,76 @@ def plot_capital_usage_over_time(df):
 
 
 def plot_unrealised_pnl_over_time(df, end_date):
-    st.dataframe(df)
+    # st.dataframe(df)
 
     open_positions = df[df['open'] == True]
-    st.dataframe(open_positions)
+    # st.dataframe(open_positions)
 
-    weekly_connection = sqlite3.connect("data/closing/weekly_closing.db")
+    weekly_connection = sqlite3.connect("data/closing/weekly_closing_2.db")
     weekly_dataframe = pd.read_sql_query("SELECT * from stock_data", weekly_connection)
 
-    for idx, row in df.iterrows():
-        # st.write(row['buy_datetime'])
+    incremental_pnl_df = pd.DataFrame(columns=["date", "pnl", "scrip"])
+    overall_pnl_df = pd.DataFrame(columns=["pnl", "scrip"])
+
+    for idx, row in open_positions.iterrows():
         position_start_date = row['buy_datetime']
         scrip = row['scrip']
-        ts = pd.Timestamp(position_start_date)
+        start_time_stamp = pd.Timestamp(position_start_date)
         position_end_date = pd.Timestamp(end_date)
-        close = utils.get_closest_close(weekly_dataframe, scrip, ts)
-        st.write(scrip + str(close))
+
+        mondays = pd.date_range(start=start_time_stamp, end=position_end_date, freq="W-MON")
+        # st.write(scrip)
+
+        prev_pnl = 0  # Initialize previous PnL
+
+        for monday in mondays:
+            close = utils.get_closest_close(weekly_dataframe, scrip, monday)
+            total_pnl = (close - row['buy_price']) * row['contracts']
+
+            incremental_pnl = total_pnl - prev_pnl  # Calculate week-on-week PnL
+            prev_pnl = total_pnl  # Update previous PnL for next iteration
+            last_pnl = total_pnl
+            # st.write(f"Scrip: {scrip}, Close: {close}, Incremental PNL: {incremental_pnl}")
+
+            incremental_pnl_df = pd.concat(
+                [incremental_pnl_df, pd.DataFrame({"date": [monday], "pnl": [incremental_pnl], "scrip": [scrip]})],
+                ignore_index=True)
+
+        overall_pnl_df = pd.concat([overall_pnl_df, pd.DataFrame({"scrip": [scrip], "pnl": [last_pnl]})])
+
+        # st.write(f"Scrip: {scrip}, Close: {close}, Total PNL: {last_pnl}")
+
+    # Load your dataframe (assuming it's already in df)
+    incremental_pnl_df["date"] = pd.to_datetime(incremental_pnl_df["date"])  # Ensure date column is in datetime format
+
+    # Group by date and sum the pnl
+    grouped_df = incremental_pnl_df.groupby("date", as_index=False)["pnl"].sum()
+
+    grouped_df['cumulative_value'] = grouped_df['pnl'].cumsum()
+
+    # st.dataframe(pnl_df)
+    # st.dataframe(grouped_df)
+
+    fig = go.Figure()
+
+    # Add the cumulative PnL trace
+    fig.add_trace(go.Scatter(x=grouped_df["date"], y=grouped_df["cumulative_value"], mode="lines",
+                             name="Unrealised Pnl"))
+
+    # Update layout
+    fig.update_layout(
+        title="Unrealised Pnl",
+        xaxis_title="Date",
+        yaxis_title="Unrealised PnL",
+        template="plotly_dark",
+        hovermode="x",
+    )
+
+    st.plotly_chart(fig)
+
+    total_pnl = grouped_df['pnl'].sum()
+    st.header("Unrealised Pnl: " + utils.format_number(total_pnl))
+    st.dataframe(overall_pnl_df)
 
 
 def plot_realised_pnl_over_time(df):
@@ -194,7 +246,7 @@ def plot_realised_pnl_over_time(df):
     ))
 
     # Streamlit App
-    st.title("Net Worth & Profit/Loss Analysis")
+    # st.title("Net Worth & Profit/Loss Analysis")
 
     merged_df = weekly_net_worth.join(weekly_pnl.set_index('week'), on='week')
 
@@ -218,13 +270,13 @@ def plot_realised_pnl_over_time(df):
     fig = go.Figure()
 
     # Add the cumulative PnL trace
-    fig.add_trace(go.Scatter(x=merged_df["week"], y=merged_df["CumulativePnL"], mode="lines", name="Cumulative PnL"))
+    fig.add_trace(go.Scatter(x=merged_df["week"], y=merged_df["CumulativePnL"], mode="lines", name="Realised PnL"))
 
     # Update layout
     fig.update_layout(
-        title="Cumulative PnL Over Time",
+        title="Realised PnL Over Time",
         xaxis_title="Date",
-        yaxis_title="Cumulative PnL",
+        yaxis_title="Realised PnL",
         template="plotly_dark",
         hovermode="x",
     )

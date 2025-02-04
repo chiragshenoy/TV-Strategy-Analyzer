@@ -33,7 +33,7 @@ def render_weekly_closing():
     trades_connection = sqlite3.connect(db_file_path)
     weeklyDataframe = pd.read_sql_query("SELECT * from table_name", trades_connection)
 
-    db_file_path = "data/closing/weekly_closing.db"
+    db_file_path = "data/closing/weekly_closing_2.db"
 
     # Load and process the selected database
     weekly_closing_connection = sqlite3.connect(db_file_path)
@@ -163,7 +163,6 @@ def render_weekly_closing():
     closing_prices_df = closing_prices_df[(closing_prices_df['time'] >= (start_date)) &
                                           (closing_prices_df['time'] <= (end_date))]
 
-    closing_prices_df = closing_prices_df.drop(columns=['open', 'high', 'low', 'Volume', 'scrip'])
     closing_prices_df['close'] = pd.to_numeric(closing_prices_df['close'], errors='coerce')
 
     # Plotting

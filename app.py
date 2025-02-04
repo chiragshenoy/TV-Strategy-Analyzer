@@ -40,7 +40,7 @@ if page == "List of Trades":
 
         st.sidebar.title("Filter Options")
         start_date = st.sidebar.date_input("Start Date", value=pd.Timestamp("2016-01-01").date())
-        end_date = st.sidebar.date_input("End Date", value=pd.Timestamp("2020-01-01").date())
+        end_date = st.sidebar.date_input("End Date", value=pd.Timestamp("2016-04-04").date())
         db_file_name = st.sidebar.selectbox("Select a .db file", db_files)
 
         # Construct the full path for the selected file
@@ -49,7 +49,7 @@ if page == "List of Trades":
         # Load and process the selected database
         strategy_connection = sqlite3.connect(db_file_path)
 
-        weeklyConnection = sqlite3.connect("data/closing/weekly_closing.db")
+        weeklyConnection = sqlite3.connect("data/closing/weekly_closing_2.db")
         weeklyDataframe = pd.read_sql_query("SELECT * from stock_data", weeklyConnection)
 
         # Query the data from the selected database
@@ -135,6 +135,7 @@ if page == "List of Trades":
         st.write("Final investment Rs." + utils.format_number(final_portfolio_value))
 
         # Calculate CAGR
+        # TODO: Divide by 0 when checking for lesser than 1 year range
         n_years = (pd.to_datetime(end_date) - pd.to_datetime(start_date)).days / 365
         cagr = (final_portfolio_value / initial_portfolio_value) ** (1 / n_years) - 1
         st.header(f"CAGR: {cagr * 100:.2f}%")
